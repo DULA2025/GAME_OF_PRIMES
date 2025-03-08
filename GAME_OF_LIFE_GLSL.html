@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Conway's Game of Life - GLSL Full Screen</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+        }
+        button {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+    <button onclick="resetRandom()">Reset Random</button>
+
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl');
+
+        // Set canvas to full window size
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Vertex Shader
+        const vertexShaderSource = `
+            attribute vec2 a_position;
+            varying vec2 v_texCoord;
+            void main() {
+                gl_Position = vec4(a_position, 0.0, 1.0);
+                v_texCoord = (a_position + 1.0) * 0.5;
+            }
+        `;
+
+        // Fragment Shader for Game of Life rules
+        const fragmentShaderSource = `
+            precision mediump float;
+            varying vec2 v_texCoord;
+            uniform sampler2D u_state;
+            uniform vec2 u_resolution;
+
+            float get(vec2 offset) {
+                return texture2D(u_state, v_texCoord + offset / u_resolution).r;
+            }
+
+            void main() {
+                float current = texture2D(u_state, v_texCoord).r;
+                float neighbors = get(vec2(-1.0, -1.0)) +
+                                get(vec2(-1.0,  0.0)) +
+                                get(vec2(-1.0,  1.0)) +
+                                get(vec2( 0.0, -1.0)) +
+                                get(vec2( 0.0,  1.0)) +
+                                get(vec2( 1.0, -1.0)) +
+                                get(vec2( 1.0,  0.0)) +
+                                get(vec2( 1.0,  1.0));
+
+                float next = 0.0;
+                if (current > 0.5) {
+                    if (neighbors > 1.5 && neighbors < 3.5) next = 1.0;
+                } else {
+                    if (neighbors > 2.5 && neighbors < 3.5) next = 1.0;
+                }
+                
+                gl_FragColor = vec4(next, next, next, 1.0);
+            }
+        `;
+
+        // Fragment Shader for display
+        const displayShaderSource = `
+            precision mediump float;
+            varying vec2 v_texCoord;
+            uniform sampler2D u_texture;
+            
+            void main() {
+                float value = texture2D(u_texture, v_texCoord).r;
+                gl_FragColor = vec4(value, value, value, 1.0);
+            }
+        `;
+
+        // Compile shader
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        // Create program
+        function createProgram(gl, vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error(gl.getProgramInfoLog(program));
+                return null;
+            }
+            return program;
+        }
+
+        // Setup shaders and programs
+        const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+        const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+        const displayShader = createShader(gl, gl.FRAGMENT_SHADER, displayShaderSource);
+
+        const simulationProgram = createProgram(gl, vertexShader, fragmentShader);
+        const displayProgram = createProgram(gl, vertexShader, displayShader);
+
+        // Setup vertex buffer
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        const positions = new Float32Array([
+            -1, -1,
+             1, -1,
+            -1,  1,
+            -1,  1,
+             1, -1,
+             1,  1,
+        ]);
+        gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+        // Setup framebuffers
+        function createFramebufferTexture() {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+            const fb = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+
+            return { texture, fb };
+        }
+
+        let fb1 = createFramebufferTexture();
+        let fb2 = createFramebufferTexture();
+
+        // Initial state
+        function resetRandom() {
+            const data = new Uint8Array(canvas.width * canvas.height * 4);
+            for (let i = 0; i < data.length; i += 4) {
+                const value = Math.random() < 0.2 ? 255 : 0;
+                data[i] = data[i + 1] = data[i + 2] = value;
+                data[i + 3] = 255;
+            }
+            
+            gl.bindTexture(gl.TEXTURE_2D, fb1.texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+        }
+
+        resetRandom();
+
+        // Animation
+        function render() {
+            // Simulation step
+            gl.useProgram(simulationProgram);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fb2.fb);
+            
+            const positionLoc = gl.getAttribLocation(simulationProgram, 'a_position');
+            gl.enableVertexAttribArray(positionLoc);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+
+            gl.uniform2f(gl.getUniformLocation(simulationProgram, 'u_resolution'), canvas.width, canvas.height);
+            gl.bindTexture(gl.TEXTURE_2D, fb1.texture);
+            gl.uniform1i(gl.getUniformLocation(simulationProgram, 'u_state'), 0);
+            
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            // Display
+            gl.useProgram(displayProgram);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            
+            const displayPositionLoc = gl.getAttribLocation(displayProgram, 'a_position');
+            gl.enableVertexAttribArray(displayPositionLoc);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.vertexAttribPointer(displayPositionLoc, 2, gl.FLOAT, false, 0, 0);
+
+            gl.bindTexture(gl.TEXTURE_2D, fb2.texture);
+            gl.uniform1i(gl.getUniformLocation(displayProgram, 'u_texture'), 0);
+            
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            // Swap framebuffers
+            [fb1, fb2] = [fb2, fb1];
+            
+            requestAnimationFrame(render);
+        }
+
+        render();
+    </script>
+</body>
+</html>
